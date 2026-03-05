@@ -1,7 +1,7 @@
-# ROS2 build artifacts
-poise_ws/build/
-poise_ws/install/
-poise_ws/log/
+# ROS2 build artifacts (colcon run from parent directory)
+build/
+install/
+log/
 
 # Python
 __pycache__/
