@@ -1,4 +1,4 @@
-# POISE Phase 1 Simulation Configuration
+# POISE Phase 2 Simulation Configuration
 # Default scenario: stationary vehicle at central Tokyo, no faults active.
 # All parameters are read at node startup — edit and relaunch to change scenario.
 
@@ -21,7 +21,6 @@ gnss_publisher:
     hdop: 0.9
 
     # Covariance reported in NavSatFix (diagonal, metres^2)
-    # Derived from position_noise_stddev_m^2; set higher to test covariance check
     position_covariance_m2: 0.0025      # = 0.05^2
 
     # -----------------------------------------------------------------------
@@ -41,7 +40,7 @@ gnss_publisher:
 
     # dropout: suppress topic publication for a duration
     dropout_start_s: 15.0              # seconds after node start
-    dropout_duration_s: 5.0            # how long to suppress (seconds)
+    dropout_duration_s: 30.0           # how long to suppress (seconds)
 
     # covariance_inflation: artificially increase reported covariance
     inflated_covariance_m2: 50.0       # value used during inflation period
@@ -92,15 +91,22 @@ gnss_imu_checker:
     max_covariance_m2: 25.0            # max acceptable diagonal covariance entry
 
     # DR realignment window (seconds).
-    # DR runs continuously from an anchor for this duration before force-realigning.
-    # Longer windows → slower drift detectable; shorter → less IMU integration error.
-    # Set to 0 to reset DR at every fix (per-fix mode, original behaviour).
     dr_realign_window_s: 60.0
+
+    # Seconds without a GNSS fix before GNSS_DROPOUT is raised.
+    # Should be > 2× GNSS period (at 10 Hz → 0.2 s); default 2.0 s.
+    gnss_dropout_timeout_s: 2.0
 
 integrity_aggregator:
   ros__parameters:
-    # How long a single WARN condition must persist before escalating to UNTRUSTED
+    # How long a non-recoverable WARN must persist before escalating to UNTRUSTED.
+    # Recoverable WARNs (e.g. GNSS_DROPOUT) do NOT escalate via this timeout.
     warn_escalation_timeout_s: 5.0
 
-    # JSON-lines log file path (absolute or relative to working directory)
+    # Time without any faults required before returning to TRUSTED after a
+    # recoverable-only fault set clears.  Models the tunnel exit scenario:
+    # GNSS re-acquired → revalidation period → TRUSTED.
+    revalidation_period_s: 10.0
+
+    # JSON-lines log file path
     log_file_path: /tmp/poise_integrity_log.jsonl

@@ -1,6 +1,6 @@
 # POISE — Position and Orientation Integrity Supervision Engine
 
-> **Phase 1** · ROS2 Humble · Python · Autoware-compatible
+> **Phase 2** · ROS2 Humble · Python · Autoware-compatible
 
 POISE monitors the trustworthiness of an autonomous vehicle's localization
 solution by cross-checking independent sensor sources against each other and
@@ -27,31 +27,34 @@ fault propagates into the vehicle's control loop.
 
 ```
  ┌─────────────────────────────────────────────────────────────────────┐
- │                        POISE Phase 1                                │
+ │                        POISE Phase 2                                │
  │                                                                     │
  │  ┌──────────────────┐    /sim/gnss     ┌──────────────────────┐    │
  │  │  gnss_publisher  │ ─────────────→   │                      │    │
- │  │  (sim node)      │                  │  gnss_imu_checker    │    │
+ │  │  (sim node)      │  SENSOR_QOS      │  gnss_imu_checker    │    │
  │  └──────────────────┘                  │  (cross-check)       │    │
  │                                        │                      │    │
  │  ┌──────────────────┐    /sim/imu      │  • DR integration    │    │
- │  │  imu_publisher   │ ─────────────→   │  • Cov check         │    │
- │  │  (sim node)      │                  │  • Threshold compare │    │
- │  └──────────────────┘                  └──────────┬───────────┘    │
- │                                                   │                │
+ │  │  imu_publisher   │ ─────────────→   │  • Cov / sat check   │    │
+ │  │  (sim node)      │  SENSOR_QOS      │  • Dropout detection │    │
+ │  └──────────────────┘                  │  • recoverable flag  │    │
+ │                                        └──────────┬───────────┘    │
+ │                                                   │ INTEGRITY_QOS  │
  │                                    /poise/integrity_status         │
  │                                                   │                │
  │                                        ┌──────────▼───────────┐    │
  │                                        │ integrity_aggregator │    │
  │                                        │                      │    │
- │                                        │  TRUSTED             │    │
- │                                        │    ↓ WARN            │    │
- │                                        │  DEGRADED            │    │
- │                                        │    ↓ CRITICAL/timeout│    │
- │                                        │  UNTRUSTED           │    │
+ │                                        │  TRUSTED ←──────┐   │    │
+ │                                        │    ↓ any WARN    │   │    │
+ │                                        │  DEGRADED        │   │    │
+ │                                        │    ↓             │ revalidation
+ │                                        │  UNTRUSTED ──────┘   │    │
+ │                                        │  (reset via service) │    │
  │                                        └──────────┬───────────┘    │
- │                                                   │                │
+ │                                                   │ SYSTEM_STATUS  │
  │                               /poise/system_integrity (JSON)       │
+ │                               /poise/reset (Trigger service)       │
  │                               + JSONL log file                     │
  └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -60,7 +63,17 @@ fault propagates into the vehicle's control loop.
 
 ## Check Definitions
 
-### Check 1 — GNSS/IMU Position Divergence
+Phase 2 introduces five classified fault codes with explicit recoverability.
+
+| Fault Code | Severity | Recoverable | Trigger |
+|---|---|---|---|
+| `GNSS_DROPOUT` | WARN | **Yes** | No GNSS fix for > `gnss_dropout_timeout_s` (2 s) |
+| `GNSS_HIGH_COVARIANCE` | WARN | **Yes** | Reported covariance > `max_covariance_m2` (25 m²) |
+| `GNSS_LOW_SATELLITES` | WARN | **Yes** | NavSatFix status indicates no fix |
+| `GNSS_IMU_DIVERGENCE_WARN` | WARN | **No** | GNSS/IMU divergence > `warn_threshold_m` (1.5 m) |
+| `GNSS_IMU_DIVERGENCE_CRITICAL` | CRITICAL | **No** | GNSS/IMU divergence > `critical_threshold_m` (3.0 m) |
+
+### Check 1 — GNSS/IMU Position Divergence (non-recoverable)
 
 At every GNSS fix (10 Hz), the GNSS-reported position is compared against the
 position predicted by dead-reckoning the IMU (Euler integration of linear
@@ -72,57 +85,63 @@ acceleration between fixes).
 | delta > 1.5 m | warn_threshold_m | GNSS_IMU_DIVERGENCE_WARN | WARN |
 | delta > 3.0 m | critical_threshold_m | GNSS_IMU_DIVERGENCE_CRITICAL | CRITICAL |
 
-**Threshold rationale:**
-- 1.5 m exceeds 3σ noise for a 0.5 m stddev sensor over a 0.1 s DR window.
-  A healthy stationary vehicle produces < 0.1 m delta.
-- 3.0 m corresponds to minimum lane-level positioning accuracy; an error of
-  this magnitude places the vehicle in an adjacent lane or on a kerb.
+Dead-reckoning uses a **sliding 60 s window** (`dr_realign_window_s`):
+the DR anchor is re-set to the current GNSS position every 60 s.  This detects
+slow drift accumulating over the window while bounding IMU integration error.
 
-Dead-reckoning state is **reset to GNSS position** after each check.  This is
-intentional — the check tests short-term consistency (step jumps, sudden
-divergence), not long-term navigation accuracy.
-
-### Check 2 — GNSS Covariance
+### Check 2 — GNSS Covariance (recoverable)
 
 The GNSS receiver's reported horizontal position covariance is compared against
 `max_covariance_m2` (default 25 m² = 5 m 1σ).  Exceeding this threshold raises
-STATUS_WARN with fault code `GNSS_COVARIANCE_EXCEEDED`.
+STATUS_WARN with fault code `GNSS_HIGH_COVARIANCE` (`recoverable=True`).
+
+### Check 3 — GNSS Dropout (recoverable)
+
+A 1 Hz timer monitors the elapsed time since the last GNSS fix.  If no fix
+arrives within `gnss_dropout_timeout_s` (2 s), `GNSS_DROPOUT` is raised
+(`recoverable=True`).  On re-acquisition the DR is force-realigned to prevent
+a spurious divergence alarm.
 
 ---
 
-## Trust State Machine
+## Trust State Machine (Phase 2)
 
 ```
          ┌───────────┐
-   start →│  TRUSTED  │
-         └─────┬─────┘
-               │ any WARN
-               ▼
-         ┌───────────┐
-         │ DEGRADED  │
-         └─────┬─────┘
-               │ CRITICAL  │  two simultaneous WARNs
-               │ or WARN sustained > escalation_timeout
-               ▼
-         ┌───────────┐
-         │ UNTRUSTED │  ← terminal state (no auto-recovery)
-         └───────────┘
+   start →│  TRUSTED  │◄──────────────────────────────┐
+         └─────┬─────┘                                │
+               │ any WARN                              │ revalidation
+               ▼                                      │ complete
+         ┌───────────┐                                │
+         │ DEGRADED  │────────────────────────────────┤
+         └─────┬─────┘                                │
+               │ CRITICAL | 2× WARNs                  │
+               │ | non-recoverable WARN > timeout      │
+               ▼                                      │
+         ┌───────────┐                                │
+         │ UNTRUSTED │────── /poise/reset ────────────┘
+         └───────────┘  (accepted when no active faults)
 ```
 
-### No-Auto-Recovery Rationale
+### Recovery Rules
 
-POISE **never automatically recovers** to a better state.  Recovery requires an
-explicit operator action (system restart or future `/poise/reset` service).
+| Scenario | Behaviour |
+|---|---|
+| All active faults are **recoverable** and they clear | Start `revalidation_period_s` (10 s) timer; if no new faults → TRUSTED |
+| Any **non-recoverable** fault was active | Auto-recovery blocked; operator must call `/poise/reset` |
+| New fault arrives during revalidation | Revalidation timer restarted |
+| Recoverable fault arrives while non-recoverable is active | Escalate to UNTRUSTED (potential masking attempt) |
 
-**Why:** An autonomous recovery after a sensor fault may re-engage AV operation
-when:
-- The fault is intermittent and will recur
-- The position estimate drifted during the fault and was not corrected
-- The root cause is unknown
+### `/poise/reset` Service
 
-Conservative safety design (aligned with ISO 26262 §9.4.3 fail-safe state
-persistence) requires that recovery is a deliberate act with human or validated
-software confirmation.
+```bash
+ros2 service call /poise/reset std_srvs/srv/Trigger
+```
+
+- **Accepted** when no fault conditions are currently active.
+- **Rejected** if any check is still in WARN or CRITICAL.
+- Clears non-recoverable fault history; returns to TRUSTED.
+- Every attempt (accepted or rejected) is logged to the JSONL file.
 
 ---
 
@@ -187,7 +206,7 @@ imu_publisher:
 ### 1 — Build
 
 ```bash
-cd ~/projects/poise/poise_ws
+cd ~/projects   # parent of the poise/ repo root
 source /opt/ros/humble/setup.bash
 colcon build --packages-select poise
 ```
@@ -207,7 +226,7 @@ ros2 pkg executables poise
 ### 3 — Launch (nominal scenario)
 
 ```bash
-ros2 launch poise poise_phase1.launch.py
+ros2 launch poise poise_phase2.launch.py
 ```
 
 ### 4 — Verify topics
@@ -227,35 +246,50 @@ ros2 topic echo /poise/system_integrity
 ros2 topic echo /poise/integrity_status
 ```
 
-### 5 — Fault injection test (GNSS drift)
+### 5 — Fault injection test (GNSS drift — non-recoverable)
 
-Edit `src/poise/config/sim_config.yaml`:
+Edit `config/sim_config.yaml` under `gnss_publisher`:
 
 ```yaml
-gnss_publisher:
-  ros__parameters:
     fault_mode: drift
     drift_rate_m_per_s: 0.05
 ```
 
-Rebuild and relaunch:
+Relaunch (no rebuild needed — config is loaded at runtime):
 
 ```bash
-colcon build --packages-select poise && \
-source install/setup.bash && \
-ros2 launch poise poise_phase1.launch.py
+ros2 launch poise poise_phase2.launch.py
 ```
 
 Monitor integrity status:
 
 ```bash
 ros2 topic echo /poise/integrity_status
-# After ~30 s (1.5 m / 0.05 m/s) you should see STATUS_WARN
-# After ~60 s (3.0 m / 0.05 m/s) you should see STATUS_CRITICAL
+# After ~30 s (1.5 m / 0.05 m/s) you should see GNSS_IMU_DIVERGENCE_WARN
+# After ~60 s (3.0 m / 0.05 m/s) you should see GNSS_IMU_DIVERGENCE_CRITICAL
 
 ros2 topic echo /poise/system_integrity
-# State transitions: TRUSTED → DEGRADED → UNTRUSTED
+# TRUSTED → DEGRADED → UNTRUSTED (does not auto-recover)
 ```
+
+Reset after faults clear:
+
+```bash
+ros2 service call /poise/reset std_srvs/srv/Trigger
+```
+
+### 6 — Fault injection test (GNSS dropout — recoverable, auto-recovery)
+
+```yaml
+    fault_mode: dropout
+    dropout_start_s: 15.0
+    dropout_duration_s: 30.0
+```
+
+Expected sequence:
+- t=17 s: GNSS_DROPOUT detected → DEGRADED
+- t=45 s: GNSS resumes → revalidation timer starts (10 s)
+- t=55 s: revalidation complete → auto-return to TRUSTED
 
 Check the JSON log:
 

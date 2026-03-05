@@ -9,3 +9,6 @@ string description
 float64 measured_value
 float64 threshold_exceeded
 string units
+# recoverable=true: environmental fault; aggregator may auto-recover when cleared.
+# recoverable=false: integrity fault; requires explicit /poise/reset.
+bool recoverable

@@ -5,21 +5,31 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
-# Find dependencies
+# ── Find dependencies ────────────────────────────────────────────────────────
 find_package(ament_cmake REQUIRED)
+find_package(ament_cmake_python REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 
-# Generate custom messages
-# rosidl installs the poise.msg Python module automatically — do NOT call
-# ament_python_install_package(poise) as it would conflict with that target.
+# ── Generate custom messages ─────────────────────────────────────────────────
+# rosidl installs the poise.msg Python module automatically.
+# Do NOT call ament_python_install_package(poise) — it would conflict.
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/IntegrityStatus.msg"
   DEPENDENCIES std_msgs
 )
 
-# Install Python executables
+# ── Install poise/qos.py alongside the rosidl-generated Python package ───────
+# This makes `from poise.qos import ...` work in all installed executables.
+ament_get_python_install_dir(PYTHON_INSTALL_DIR)
+install(FILES
+  poise/qos.py
+  DESTINATION ${PYTHON_INSTALL_DIR}/poise/
+)
+
+# ── Install Python executables ────────────────────────────────────────────────
 install(PROGRAMS
   poise/sim/gnss_publisher.py
   DESTINATION lib/${PROJECT_NAME}
@@ -44,7 +54,7 @@ install(PROGRAMS
   RENAME integrity_aggregator
 )
 
-# Install config, launch, and docs
+# ── Install config, launch, and docs ─────────────────────────────────────────
 install(DIRECTORY
   config
   launch
@@ -57,5 +67,5 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 endif()
 
-ament_export_dependencies(rosidl_default_runtime)
+ament_export_dependencies(rosidl_default_runtime std_srvs)
 ament_package()

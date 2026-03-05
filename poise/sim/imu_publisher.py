@@ -13,6 +13,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Imu
 from geometry_msgs.msg import Vector3
+from poise.qos import SENSOR_QOS
 
 
 class ImuPublisher(Node):
@@ -73,7 +74,7 @@ class ImuPublisher(Node):
         self._orient_cov = [-1.0] + [0.0] * 8
 
         # ── Publisher ────────────────────────────────────────────────────────
-        self._pub = self.create_publisher(Imu, '/sim/imu', 10)
+        self._pub = self.create_publisher(Imu, '/sim/imu', SENSOR_QOS)
 
         period = 1.0 / self.rate_hz
         self._timer = self.create_timer(period, self._publish_cb)

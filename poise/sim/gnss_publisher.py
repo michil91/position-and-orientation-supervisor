@@ -11,6 +11,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import NavSatFix, NavSatStatus
 from builtin_interfaces.msg import Time
+from poise.qos import SENSOR_QOS
 
 
 class GnssPublisher(Node):
@@ -86,7 +87,7 @@ class GnssPublisher(Node):
         self._R = 6_378_137.0
 
         # ── Publisher ────────────────────────────────────────────────────────
-        self._pub = self.create_publisher(NavSatFix, '/sim/gnss', 10)
+        self._pub = self.create_publisher(NavSatFix, '/sim/gnss', SENSOR_QOS)
 
         period = 1.0 / self.rate_hz
         self._timer = self.create_timer(period, self._publish_cb)
