@@ -44,6 +44,10 @@ class ImuPublisher(Node):
         self.declare_parameter('dropout_start_s', 15.0)
         self.declare_parameter('dropout_duration_s', 3.0)
 
+        # extrinsic_shift: permanent Z-axis offset simulating a rotational mount shift.
+        # Applied always when non-zero, independent of fault_mode.
+        self.declare_parameter('extrinsic_shift', 0.0)
+
         # ── Read parameters ──────────────────────────────────────────────────
         self.rate_hz        = self.get_parameter('publish_rate_hz').value
         self.accel_noise    = self.get_parameter('accel_noise_stddev_mps2').value
@@ -59,8 +63,16 @@ class ImuPublisher(Node):
         self.spike_duration = self.get_parameter('spike_duration_s').value
         self.spike_mag      = self.get_parameter('spike_magnitude_mps2').value
 
-        self.dropout_start  = self.get_parameter('dropout_start_s').value
-        self.dropout_dur    = self.get_parameter('dropout_duration_s').value
+        self.dropout_start    = self.get_parameter('dropout_start_s').value
+        self.dropout_dur      = self.get_parameter('dropout_duration_s').value
+        self.extrinsic_shift  = self.get_parameter('extrinsic_shift').value
+
+        if self.extrinsic_shift != 0.0:
+            self.get_logger().warn(
+                f'[FAULT INJECTION] extrinsic_shift={self.extrinsic_shift} m/s² active — '
+                f'Z-axis acceleration will be offset by {self.extrinsic_shift} m/s² on '
+                f'every sample (simulates permanent IMU mount rotation)'
+            )
 
         # ── State ────────────────────────────────────────────────────────────
         self._elapsed_s = 0.0
@@ -105,11 +117,13 @@ class ImuPublisher(Node):
                 return
 
         # ── Base accelerations ────────────────────────────────────────────
-        # Straight-line constant-velocity → centripetal accel on y, no forward accel
-        # Gravity is NOT included (body frame, gravity is internal to INS integration)
+        # Straight-line constant-velocity → centripetal accel on y, no forward accel.
+        # Z-axis includes gravity (-9.81 m/s²): a stationary level IMU in Z-down
+        # body frame reports the reaction force as -9.81 m/s² in Z.
+        _GRAVITY_Z = -9.81  # m/s²
         accel_x = self._gaussian(self.accel_noise)
         accel_y = self.velocity * self.turn_rate + self._gaussian(self.accel_noise)
-        accel_z = self._gaussian(self.accel_noise)
+        accel_z = _GRAVITY_Z + self._gaussian(self.accel_noise)
 
         gyro_x  = self._gaussian(self.gyro_noise)
         gyro_y  = self._gaussian(self.gyro_noise)
@@ -129,6 +143,12 @@ class ImuPublisher(Node):
             t = self._elapsed_s
             if self.spike_time <= t <= self.spike_time + self.spike_duration:
                 accel_x += self.spike_mag
+
+        # ── Extrinsic shift (independent of fault_mode) ───────────────────
+        # Simulates a permanent rotational shift in the IMU mount — the sensor
+        # reports a gravity vector that is systematically offset from expected.
+        if self.extrinsic_shift != 0.0:
+            accel_z += self.extrinsic_shift
 
         # ── Build message ─────────────────────────────────────────────────
         msg = Imu()
