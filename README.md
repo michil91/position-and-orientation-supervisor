@@ -1,6 +1,6 @@
 # POISE — Position and Orientation Integrity Supervision Engine
 
-> **Phase 2** · ROS2 Humble · Python · Autoware-compatible
+> **Phase 3** · ROS2 Humble · Python · Autoware-compatible
 
 POISE monitors the trustworthiness of an autonomous vehicle's localization
 solution by cross-checking independent sensor sources against each other and
@@ -26,44 +26,67 @@ fault propagates into the vehicle's control loop.
 ## Architecture
 
 ```
- ┌─────────────────────────────────────────────────────────────────────┐
- │                        POISE Phase 2                                │
- │                                                                     │
- │  ┌──────────────────┐    /sim/gnss     ┌──────────────────────┐    │
- │  │  gnss_publisher  │ ─────────────→   │                      │    │
- │  │  (sim node)      │  SENSOR_QOS      │  gnss_imu_checker    │    │
- │  └──────────────────┘                  │  (cross-check)       │    │
- │                                        │                      │    │
- │  ┌──────────────────┐    /sim/imu      │  • DR integration    │    │
- │  │  imu_publisher   │ ─────────────→   │  • Cov / sat check   │    │
- │  │  (sim node)      │  SENSOR_QOS      │  • Dropout detection │    │
- │  └──────────────────┘                  │  • recoverable flag  │    │
- │                                        └──────────┬───────────┘    │
- │                                                   │ INTEGRITY_QOS  │
- │                                    /poise/integrity_status         │
- │                                                   │                │
- │                                        ┌──────────▼───────────┐    │
- │                                        │ integrity_aggregator │    │
- │                                        │                      │    │
- │                                        │  TRUSTED ←──────┐   │    │
- │                                        │    ↓ any WARN    │   │    │
- │                                        │  DEGRADED        │   │    │
- │                                        │    ↓             │ revalidation
- │                                        │  UNTRUSTED ──────┘   │    │
- │                                        │  (reset via service) │    │
- │                                        └──────────┬───────────┘    │
- │                                                   │ SYSTEM_STATUS  │
- │                               /poise/system_integrity (JSON)       │
- │                               /poise/reset (Trigger service)       │
- │                               + JSONL log file                     │
- └─────────────────────────────────────────────────────────────────────┘
+ ┌──────────────────────────────────────────────────────────────────────────┐
+ │                           POISE Phase 3                                  │
+ │                                                                          │
+ │  ┌──────────────────┐    /sim/gnss     ┌────────────────────────────┐    │
+ │  │  gnss_publisher  │ ─────────────→   │                            │    │
+ │  │  (sim node)      │  SENSOR_QOS      │    gnss_imu_checker        │    │
+ │  └──────────────────┘                  │    (cross-check)           │    │
+ │                                        │  • DR integration          │    │
+ │  ┌──────────────────┐    /sim/imu      │  • Cov / sat check         │    │
+ │  │  imu_publisher   │ ──────────────→  │  • Dropout detection       │    │
+ │  │  (sim node)      │  SENSOR_QOS   ↗  │  • recoverable flag        │    │
+ │  └──────────────────┘               │  └────────────┬───────────────┘    │
+ │                                     │               │                    │
+ │  ┌──────────────────┐  /sim/vehicle_state           │                    │
+ │  │ vehicle_state_   │ ──────────────┐               │                    │
+ │  │ publisher        │  SENSOR_QOS   │               │                    │
+ │  └──────────────────┘               │               │                    │
+ │                                     │  ┌────────────▼───────────────┐    │
+ │                    /sim/gnss ────────┼→ │  calibration_validator     │    │
+ │                    /sim/imu ─────────┘  │  • IMU envelope (accel,    │    │
+ │                                     ↘  │    gyro, gravity Z)        │    │
+ │                                        │  • GNSS covariance         │    │
+ │                                        │  • Geofence check          │    │
+ │                                        │  • Fix type check          │    │
+ │                                        └────────────┬───────────────┘    │
+ │                                                     │                    │
+ │  /sim/imu ─────────────────────────────┐            │                    │
+ │  /sim/vehicle_state ───────────────────┼→ ┌─────────▼───────────────┐    │
+ │                                        │  │  extrinsic_validator    │    │
+ │                                        │  │  • Stationary gravity   │    │
+ │                                        │  │    mean check           │    │
+ │                                        │  │  • Mount shift detect   │    │
+ │                                        └─ └─────────┬───────────────┘    │
+ │                                                     │                    │
+ │                              /poise/integrity_status (INTEGRITY_QOS)     │
+ │                          ┌──────────────────────────┘                    │
+ │                          ▼                                                │
+ │                ┌─────────────────────┐                                   │
+ │                │ integrity_aggregator│                                   │
+ │                │                     │                                   │
+ │                │  TRUSTED ←──────┐   │                                   │
+ │                │    ↓ any WARN    │   │                                   │
+ │                │  DEGRADED        │ revalidation                         │
+ │                │    ↓             │   │                                   │
+ │                │  UNTRUSTED ──────┘   │                                   │
+ │                │  (reset via service) │                                   │
+ │                └─────────┬───────────┘                                   │
+ │                          │ SYSTEM_STATUS_QOS                             │
+ │                    /poise/system_integrity (JSON)                        │
+ │                    /poise/reset (Trigger service)                        │
+ │                    + JSONL log file                                       │
+ └──────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## Check Definitions
 
-Phase 2 introduces five classified fault codes with explicit recoverability.
+Phase 3 adds five new classified fault codes to the four introduced in Phase 2.
+
+### Phase 2 Checks (gnss_imu_checker)
 
 | Fault Code | Severity | Recoverable | Trigger |
 |---|---|---|---|
@@ -73,38 +96,57 @@ Phase 2 introduces five classified fault codes with explicit recoverability.
 | `GNSS_IMU_DIVERGENCE_WARN` | WARN | **No** | GNSS/IMU divergence > `warn_threshold_m` (1.5 m) |
 | `GNSS_IMU_DIVERGENCE_CRITICAL` | CRITICAL | **No** | GNSS/IMU divergence > `critical_threshold_m` (3.0 m) |
 
-### Check 1 — GNSS/IMU Position Divergence (non-recoverable)
+### Phase 3 Checks — Calibration Envelope Validator
 
-At every GNSS fix (10 Hz), the GNSS-reported position is compared against the
-position predicted by dead-reckoning the IMU (Euler integration of linear
-acceleration between fixes).
-
-| Condition | Threshold (default) | Fault Code | Status |
+| Fault Code | Severity | Recoverable | Trigger |
 |---|---|---|---|
-| delta ≤ 1.5 m | — | — | OK |
-| delta > 1.5 m | warn_threshold_m | GNSS_IMU_DIVERGENCE_WARN | WARN |
-| delta > 3.0 m | critical_threshold_m | GNSS_IMU_DIVERGENCE_CRITICAL | CRITICAL |
+| `IMU_ACCEL_OUT_OF_ENVELOPE` | CRITICAL | **No** | Linear acceleration magnitude > `imu_max_linear_accel` (49 m/s²) |
+| `IMU_GYRO_OUT_OF_ENVELOPE` | CRITICAL | **No** | Angular velocity magnitude > `imu_max_angular_velocity` (10 rad/s) |
+| `IMU_GRAVITY_OUT_OF_ENVELOPE` | CRITICAL | **No** | Z-axis accel outside [`imu_min_accel_z`, `imu_max_accel_z`] (−15 to −5 m/s²) |
+| `GNSS_OUT_OF_GEOFENCE` | WARN | **Yes** | Position outside configured operating area |
+| `GNSS_FIX_DEGRADED` | WARN | **Yes** | NavSatFix status below `gnss_min_fix_type` |
 
-Dead-reckoning uses a **sliding 60 s window** (`dr_realign_window_s`):
-the DR anchor is re-set to the current GNSS position every 60 s.  This detects
-slow drift accumulating over the window while bounding IMU integration error.
+**Calibration envelope threshold rationale:**
+- `imu_max_linear_accel = 49.0 m/s²` (~5G): the physical saturation limit of a typical MEMS accelerometer.  A stationary vehicle with gravity (≈9.81 m/s²) and normal vibration sits well below this.  Exceeding it requires an impossible mechanical event or sensor failure.
+- `imu_max_angular_velocity = 10.0 rad/s`: a rapid vehicle U-turn peaks at ~1.5 rad/s; 10 rad/s is mechanically implausible and indicates sensor failure or electrical interference.
+- `imu_gravity_z_range = [−15.0, −5.0] m/s²`: nominal gravity is −9.81 m/s² in Z-down body frame.  The ±5 m/s² tolerance covers vehicle pitch/roll up to ~30° while still flagging catastrophic mounting errors or orientation failures.
 
-### Check 2 — GNSS Covariance (recoverable)
+### Phase 3 Checks — Extrinsic Consistency Validator
 
-The GNSS receiver's reported horizontal position covariance is compared against
-`max_covariance_m2` (default 25 m² = 5 m 1σ).  Exceeding this threshold raises
-STATUS_WARN with fault code `GNSS_HIGH_COVARIANCE` (`recoverable=True`).
+| Fault Code | Severity | Recoverable | Trigger |
+|---|---|---|---|
+| `IMU_EXTRINSIC_WARN` | WARN | **No** | Mean Z-axis gravity deviation > `imu_gravity_warn_tolerance` (0.5 m/s²) |
+| `IMU_EXTRINSIC_CRITICAL` | CRITICAL | **No** | Mean Z-axis gravity deviation > `imu_gravity_critical_tolerance` (1.5 m/s²) |
 
-### Check 3 — GNSS Dropout (recoverable)
+**Extrinsic detection method — systematic vs. random offset:**
 
-A 1 Hz timer monitors the elapsed time since the last GNSS fix.  If no fix
-arrives within `gnss_dropout_timeout_s` (2 s), `GNSS_DROPOUT` is raised
-(`recoverable=True`).  On re-acquisition the DR is force-realigned to prevent
-a spurious divergence alarm.
+A physical mount rotation shifts the IMU's gravity vector by a *constant* amount on every sample.  This is a **systematic** offset that shifts the mean of the Z-axis distribution but does not increase its variance.  A standard per-sample threshold check would produce false alarms from random noise (typically ±0.02 m/s² at 1σ).
+
+The extrinsic validator uses a **rolling window mean** (100 samples, 1 s at 100 Hz).  Averaging 100 samples reduces Gaussian noise by √100 = 10×, giving:
+- Sensitivity to systematic offsets ≥ ~0.05 m/s² (~0.3° tilt)
+- Near-zero false positive rate from random noise alone
+
+The deviation of the mean from `expected_gravity_z` (−9.81 m/s²) is the diagnostic signal:
+
+| Deviation | Interpretation | Action |
+|---|---|---|
+| < 0.5 m/s² | Within calibration tolerance (< ~3° tilt equivalent) | STATUS_OK |
+| 0.5–1.5 m/s² | Detectable systematic offset (~3°–9° tilt) | IMU_EXTRINSIC_WARN |
+| > 1.5 m/s² | Significant offset affecting DR accuracy (> ~9° tilt) | IMU_EXTRINSIC_CRITICAL |
+
+**Extrinsic check and tunnel / standstill interaction:**
+
+The check only runs when the vehicle is stationary (velocity < `stationary_velocity_threshold`, default 0.5 m/s).  This prevents vehicle acceleration from being misinterpreted as a gravity shift.
+
+- **Vehicle moving**: accumulation pauses; last determined status is held and re-published at 1 Hz.
+- **Moving → stationary transition**: sample window resets so fresh samples are used.
+- **Before min_stationary_samples (50) collected**: publishes `EXTRINSIC_CHECK_PENDING` (STATUS_OK) while waiting.
+
+**Known limitation:** The extrinsic check assumes level terrain.  A sustained road slope will produce an apparent gravity deviation.  In a production deployment, terrain gradient (from a map or barometer) should be compensated before this check runs.
 
 ---
 
-## Trust State Machine (Phase 2)
+## Trust State Machine (Phase 3)
 
 ```
          ┌───────────┐
@@ -155,24 +197,11 @@ All fault modes are controlled entirely through `config/sim_config.yaml`.
 gnss_publisher:
   ros__parameters:
     fault_mode: drift        # none | drift | jump | dropout | covariance_inflation
-
-    # drift parameters
     drift_rate_m_per_s: 0.05
     drift_direction_deg: 0.0
-
-    # jump parameters
     jump_time_s: 20.0
     jump_north_m: 5.0
-    jump_east_m: 0.0
-
-    # dropout parameters
-    dropout_start_s: 15.0
-    dropout_duration_s: 5.0
-
-    # covariance_inflation parameters
-    inflated_covariance_m2: 50.0
-    inflation_start_s: 10.0
-    inflation_duration_s: 10.0
+    initial_latitude: 34.0  # outside geofence [35.0, 36.5] → GNSS_OUT_OF_GEOFENCE
 ```
 
 ### IMU Fault Modes
@@ -180,17 +209,11 @@ gnss_publisher:
 ```yaml
 imu_publisher:
   ros__parameters:
-    fault_mode: bias         # none | bias | spike | dropout
-
-    bias_axis: x
-    bias_magnitude_mps2: 0.5
-
+    fault_mode: spike        # none | bias | spike | dropout
     spike_time_s: 10.0
-    spike_duration_s: 0.1
-    spike_magnitude_mps2: 10.0
+    spike_magnitude_mps2: 55.0   # > 49.0 → IMU_ACCEL_OUT_OF_ENVELOPE
 
-    dropout_start_s: 15.0
-    dropout_duration_s: 3.0
+    extrinsic_shift: 2.0         # always applied; 2.0 > crit_tol 1.5 → IMU_EXTRINSIC_CRITICAL
 ```
 
 ---
@@ -217,21 +240,22 @@ colcon build --packages-select poise
 source install/setup.bash
 ros2 pkg executables poise
 # Expected:
+#   poise calibration_validator
+#   poise extrinsic_validator
+#   poise gnss_imu_checker
 #   poise gnss_publisher
 #   poise imu_publisher
-#   poise gnss_imu_checker
 #   poise integrity_aggregator
+#   poise vehicle_state_publisher
 ```
 
-### 3 — Launch (nominal scenario)
+### 3 — Launch (Phase 3 nominal)
 
 ```bash
-ros2 launch poise poise_phase2.launch.py
+ros2 launch poise poise_phase3.launch.py
 ```
 
 ### 4 — Verify topics
-
-In a second terminal:
 
 ```bash
 source /opt/ros/humble/setup.bash && source install/setup.bash
@@ -239,59 +263,61 @@ ros2 topic list
 # Should include:
 #   /sim/gnss
 #   /sim/imu
+#   /sim/vehicle_state
 #   /poise/integrity_status
 #   /poise/system_integrity
-
-ros2 topic echo /poise/system_integrity
-ros2 topic echo /poise/integrity_status
 ```
 
-### 5 — Fault injection test (GNSS drift — non-recoverable)
+### 5 — Phase 3 Verification Tests
 
-Edit `config/sim_config.yaml` under `gnss_publisher`:
+**Test A — Nominal (no faults):**
+Default config.  All three checkers publish STATUS_OK, system holds TRUSTED.
+
+**Test B — GNSS geofence (recoverable, auto-recovery):**
+```yaml
+gnss_publisher:
+  ros__parameters:
+    initial_latitude: 34.0   # outside geofence [35.0, 36.5]
+```
+Expected: `GNSS_OUT_OF_GEOFENCE` WARN → DEGRADED.
+Restore latitude → revalidation → TRUSTED (auto-recovery, no reset needed).
+
+**Test C — IMU acceleration spike (non-recoverable):**
+```yaml
+imu_publisher:
+  ros__parameters:
+    fault_mode: spike
+    spike_magnitude_mps2: 55.0   # exceeds 49.0 m/s² envelope limit
+```
+Expected: `IMU_ACCEL_OUT_OF_ENVELOPE` CRITICAL at t≈10 s → UNTRUSTED.
+Does NOT auto-recover.  Requires `/poise/reset` after fault clears.
+
+**Test D — IMU extrinsic shift (non-recoverable):**
+```yaml
+imu_publisher:
+  ros__parameters:
+    extrinsic_shift: 2.0     # 2.0 m/s² > critical_tolerance 1.5 m/s²
+```
+Expected: `IMU_EXTRINSIC_CRITICAL` after ~1 s of stationary samples → UNTRUSTED.
+Does NOT auto-recover.  Requires `/poise/reset`.
+
+### 6 — GNSS drift test (Phase 1/2 reference)
 
 ```yaml
+gnss_publisher:
+  ros__parameters:
     fault_mode: drift
     drift_rate_m_per_s: 0.05
 ```
+Expected: `GNSS_IMU_DIVERGENCE_WARN` after ~30 s, UNTRUSTED after ~35 s.
 
-Relaunch (no rebuild needed — config is loaded at runtime):
-
-```bash
-ros2 launch poise poise_phase2.launch.py
-```
-
-Monitor integrity status:
-
-```bash
-ros2 topic echo /poise/integrity_status
-# After ~30 s (1.5 m / 0.05 m/s) you should see GNSS_IMU_DIVERGENCE_WARN
-# After ~60 s (3.0 m / 0.05 m/s) you should see GNSS_IMU_DIVERGENCE_CRITICAL
-
-ros2 topic echo /poise/system_integrity
-# TRUSTED → DEGRADED → UNTRUSTED (does not auto-recover)
-```
-
-Reset after faults clear:
+### 7 — Reset after non-recoverable faults
 
 ```bash
 ros2 service call /poise/reset std_srvs/srv/Trigger
 ```
 
-### 6 — Fault injection test (GNSS dropout — recoverable, auto-recovery)
-
-```yaml
-    fault_mode: dropout
-    dropout_start_s: 15.0
-    dropout_duration_s: 30.0
-```
-
-Expected sequence:
-- t=17 s: GNSS_DROPOUT detected → DEGRADED
-- t=45 s: GNSS resumes → revalidation timer starts (10 s)
-- t=55 s: revalidation complete → auto-return to TRUSTED
-
-Check the JSON log:
+### 8 — Check the JSON log
 
 ```bash
 cat /tmp/poise_integrity_log.jsonl | python3 -m json.tool --no-ensure-ascii
@@ -302,19 +328,18 @@ cat /tmp/poise_integrity_log.jsonl | python3 -m json.tool --no-ensure-ascii
 ## Relationship to Autoware Universe
 
 POISE is designed to monitor Autoware localization outputs.  The sim topics
-(`/sim/gnss`, `/sim/imu`) can be remapped to Autoware's live topics using
-launch arguments or a topic remapping YAML:
+can be remapped to Autoware's live topics using launch arguments:
 
 | POISE sim topic | Autoware topic |
 |---|---|
 | `/sim/gnss` | `/sensing/gnss/ublox/nav_sat_fix` |
-| `/sim/imu`  | `/sensing/imu/tamagawa/imu_raw`   |
+| `/sim/imu` | `/sensing/imu/tamagawa/imu_raw` |
+| `/sim/vehicle_state` | `/localization/kinematic_state` |
 
 To connect to a live Autoware stack, replace the sim publisher nodes with
-remapping-only launch entries and point the checker at the real sensor topics:
+remapping-only launch entries:
 
 ```python
-# In poise_phase1.launch.py — replace sim publishers with remappings
 Node(
     package='poise',
     executable='gnss_imu_checker',
@@ -322,11 +347,16 @@ Node(
         ('/sim/gnss', '/sensing/gnss/ublox/nav_sat_fix'),
         ('/sim/imu',  '/sensing/imu/tamagawa/imu_raw'),
     ],
-)
+),
+Node(
+    package='poise',
+    executable='extrinsic_validator',
+    remappings=[
+        ('/sim/imu',           '/sensing/imu/tamagawa/imu_raw'),
+        ('/sim/vehicle_state', '/localization/kinematic_state'),
+    ],
+),
 ```
-
-The `IntegrityStatus` and `system_integrity` outputs can then be consumed by
-Autoware's `system_monitor` or a custom safety manager node.
 
 ---
 

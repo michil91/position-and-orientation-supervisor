@@ -56,11 +56,12 @@ imu_publisher:
     accel_noise_stddev_mps2: 0.02      # 1-sigma accelerometer noise (m/s^2)
     gyro_noise_stddev_radps: 0.001     # 1-sigma gyroscope noise (rad/s)
 
-    # Constant-velocity straight-line motion model
-    # YAML anchors allow vehicle_state_publisher to share these values without
-    # duplication — changing here updates both nodes automatically.
-    linear_velocity_mps: &sim_velocity 0.0   # forward velocity (m/s); 0 = stationary
-    turn_rate_radps: &sim_turn_rate 0.0      # yaw rate (rad/s); 0 = straight line
+    # Constant-velocity straight-line motion model.
+    # NOTE: keep linear_velocity_mps and turn_rate_radps in sync with the
+    # matching entries in vehicle_state_publisher below — both nodes model
+    # the same vehicle motion (RCL's YAML parser does not support anchors).
+    linear_velocity_mps: 0.0              # forward velocity (m/s); 0 = stationary
+    turn_rate_radps: 0.0                  # yaw rate (rad/s); 0 = straight line
 
     # -----------------------------------------------------------------------
     # Fault injection
@@ -91,11 +92,12 @@ imu_publisher:
 vehicle_state_publisher:
   ros__parameters:
     publish_rate_hz: 50.0
-    # Reuse imu_publisher velocity values via YAML anchors (defined above).
-    # Both nodes model the same vehicle motion — keeping them in sync is critical
-    # for the extrinsic_validator's standstill detection.
-    linear_velocity_mps: *sim_velocity
-    turn_rate_radps: *sim_turn_rate
+    # Keep these values in sync with imu_publisher.linear_velocity_mps and
+    # imu_publisher.turn_rate_radps above — both nodes model the same vehicle
+    # motion.  The extrinsic_validator uses /sim/vehicle_state to determine
+    # when the vehicle is stationary; disagreement would cause missed detections.
+    linear_velocity_mps: 0.0
+    turn_rate_radps: 0.0
 
 gnss_imu_checker:
   ros__parameters:
