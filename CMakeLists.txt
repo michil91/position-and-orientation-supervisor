@@ -11,7 +11,9 @@ find_package(ament_cmake_python REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(visualization_msgs REQUIRED)
 
 # ── Generate custom messages ─────────────────────────────────────────────────
 # rosidl installs the poise.msg Python module automatically.
@@ -72,6 +74,18 @@ install(PROGRAMS
   RENAME integrity_aggregator
 )
 
+install(PROGRAMS
+  poise/visualization/status_visualizer.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME status_visualizer
+)
+
+# Install visualization __init__.py so the module is importable during development
+install(FILES
+  poise/visualization/__init__.py
+  DESTINATION ${PYTHON_INSTALL_DIR}/poise/visualization/
+)
+
 # ── Install config, launch, and docs ─────────────────────────────────────────
 install(DIRECTORY
   config
@@ -85,5 +99,5 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 endif()
 
-ament_export_dependencies(rosidl_default_runtime std_srvs)
+ament_export_dependencies(rosidl_default_runtime std_srvs geometry_msgs visualization_msgs)
 ament_package()

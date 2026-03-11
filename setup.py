@@ -27,6 +27,7 @@ setup(
             'calibration_validator = poise.checks.calibration_validator:main',
             'extrinsic_validator = poise.checks.extrinsic_validator:main',
             'integrity_aggregator = poise.core.integrity_aggregator:main',
+            'status_visualizer = poise.visualization.status_visualizer:main',
         ],
     },
 )

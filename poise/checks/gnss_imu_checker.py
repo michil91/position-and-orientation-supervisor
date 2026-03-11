@@ -43,6 +43,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.time import Time
 from sensor_msgs.msg import NavSatFix, Imu, NavSatStatus
+from geometry_msgs.msg import PointStamped
 
 from poise.msg import IntegrityStatus
 from poise.qos import SENSOR_QOS, INTEGRITY_QOS
@@ -120,6 +121,9 @@ class GnssImuChecker(Node):
         self._status_pub = self.create_publisher(
             IntegrityStatus, '/poise/integrity_status', INTEGRITY_QOS
         )
+        self._dr_pos_pub = self.create_publisher(
+            PointStamped, '/poise/dr_position', INTEGRITY_QOS
+        )
 
         self.create_subscription(Imu,       '/sim/imu',  self._imu_cb,  SENSOR_QOS)
         self.create_subscription(NavSatFix, '/sim/gnss', self._gnss_cb, SENSOR_QOS)
@@ -194,6 +198,7 @@ class GnssImuChecker(Node):
                 f'lon={self._ref_lon:.6f}'
             )
             self._realign_dr(0.0, 0.0, now_mono)
+            self._publish_dr_position(now_stamp)
             return
 
         # ── Convert to ENU ─────────────────────────────────────────────────
@@ -210,6 +215,7 @@ class GnssImuChecker(Node):
                 'DR realigned to GNSS on dropout re-acquisition'
             )
             self._realign_dr(east, north, now_mono)
+            self._publish_dr_position(now_stamp)
             return
 
         # ── Check: satellite quality (NavSatFix status field) ─────────────
@@ -282,10 +288,12 @@ class GnssImuChecker(Node):
                 f'DR realignment after {elapsed_in_window:.1f}s window'
             )
             self._realign_dr(east, north, now_mono)
+            self._publish_dr_position(now_stamp)
             return
 
         # ── Check: GNSS/IMU position divergence ───────────────────────────
         if self._imu_samples_since_realign == 0:
+            self._publish_dr_position(now_stamp)
             return
 
         dr_abs_east  = self._dr_anchor_east  + self._dr_east
@@ -349,10 +357,15 @@ class GnssImuChecker(Node):
                     units='m', stamp=now_stamp,
                 )
 
+        self._publish_dr_position(now_stamp)
+
     # ── Dropout detection timer ───────────────────────────────────────────────
 
     def _dropout_check_cb(self):
-        """1 Hz check: raise GNSS_DROPOUT if no fix received recently."""
+        """1 Hz check: raise GNSS_DROPOUT if no fix received recently.
+        Also publishes a combined STATUS_OK heartbeat when all checks are nominal,
+        so the visualizer's traffic light shows green instead of grey.
+        """
         if self._ref_lat is None:
             return  # haven't had a first fix yet
 
@@ -380,6 +393,28 @@ class GnssImuChecker(Node):
                 f'GNSS_DROPOUT: {since_last:.1f}s without fix'
             )
 
+        # Heartbeat STATUS_OK when all checks are nominal — lets the visualizer
+        # show a green traffic light instead of grey (no-data).
+        no_faults = (
+            not self._dropout_active
+            and not self._covariance_warn_active
+            and not self._satellites_warn_active
+            and not self._cross_check_fault_active
+        )
+        if no_faults and self._ref_lat is not None:
+            stamp = self.get_clock().now().to_msg()
+            self._publish_status(
+                check_name='gnss_imu_checker',
+                status=IntegrityStatus.STATUS_OK,
+                recoverable=True,
+                fault_code='',
+                description='All GNSS/IMU checks nominal',
+                measured=0.0,
+                threshold=0.0,
+                units='',
+                stamp=stamp,
+            )
+
     # ── DR realignment ────────────────────────────────────────────────────────
 
     def _realign_dr(self, anchor_east: float, anchor_north: float,
@@ -405,6 +440,18 @@ class GnssImuChecker(Node):
                 measured=0.0, threshold=self.warn_thr,
                 units='m', stamp=stamp,
             )
+
+    # ── DR position publisher ─────────────────────────────────────────────────
+
+    def _publish_dr_position(self, stamp):
+        """Publish current dead-reckoned position (ENU, relative to first fix)."""
+        msg = PointStamped()
+        msg.header.stamp    = stamp
+        msg.header.frame_id = 'map'
+        msg.point.x = self._dr_anchor_east  + self._dr_east
+        msg.point.y = self._dr_anchor_north + self._dr_north
+        msg.point.z = 0.0
+        self._dr_pos_pub.publish(msg)
 
     # ── Status publisher ─────────────────────────────────────────────────────
 
