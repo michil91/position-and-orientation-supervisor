@@ -33,6 +33,9 @@ class GnssPublisher(Node):
 
         self.declare_parameter('fault_mode', 'none')
 
+        # vehicle motion model — keep in sync with imu_publisher and odometry_publisher
+        self.declare_parameter('linear_velocity_mps', 0.0)
+
         # drift
         self.declare_parameter('drift_rate_m_per_s', 0.05)
         self.declare_parameter('drift_direction_deg', 0.0)
@@ -62,6 +65,7 @@ class GnssPublisher(Node):
         self.hdop = self.get_parameter('hdop').value
         self.cov_m2 = self.get_parameter('position_covariance_m2').value
         self.fault_mode = self.get_parameter('fault_mode').value
+        self.velocity   = self.get_parameter('linear_velocity_mps').value
 
         self.drift_rate = self.get_parameter('drift_rate_m_per_s').value
         self.drift_dir_deg = self.get_parameter('drift_direction_deg').value
@@ -82,6 +86,7 @@ class GnssPublisher(Node):
         self._jump_applied = False
         self._lat_offset_deg = 0.0  # accumulated drift in degrees
         self._lon_offset_deg = 0.0
+        self._north_m = 0.0          # vehicle position: northward displacement from lat0
 
         # Earth radius for degree conversion
         self._R = 6_378_137.0
@@ -119,6 +124,9 @@ class GnssPublisher(Node):
         dt = 1.0 / self.rate_hz
         self._elapsed_s += dt
 
+        # ── Vehicle motion: advance northward at nominal velocity ──────────
+        self._north_m += self.velocity * dt
+
         # ── Dropout: suppress publication ─────────────────────────────────
         if self.fault_mode == 'dropout':
             t = self._elapsed_s
@@ -149,6 +157,7 @@ class GnssPublisher(Node):
         noise_e = self._gaussian_noise() * self.noise_std
 
         lat = (self.lat0
+               + self._metres_to_lat_deg(self._north_m)
                + self._lat_offset_deg
                + self._metres_to_lat_deg(noise_n))
         lon = (self.lon0

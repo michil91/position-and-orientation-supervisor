@@ -7,10 +7,21 @@ Publishes IntegrityStatus on /poise/integrity_status.
 
 Detection method
 ----------------
-At each GNSS update, compares GNSS-reported displacement since the window anchor
-against odometry-integrated displacement over the same interval.  Odometry velocity
-(twist.twist.linear.x) is integrated between GNSS updates using the same sliding
-window approach as gnss_imu_checker but with a longer window.
+At each GNSS update the node compares two scalar distances, both measured from the
+same window anchor point:
+
+  gnss_disp  — Euclidean ENU distance between the anchor GNSS geodetic position and
+               the current GNSS geodetic position.  Computed by calling
+               _geodetic_to_enu(anchor_lat, anchor_lon, current_lat, current_lon)
+               directly; no shared reference-origin frame is involved.
+
+  odom_disp  — Total distance the wheel odometer reports since the anchor, computed
+               by integrating scalar speed (sqrt(vx²+vy²)) over time.
+
+Comparing scalar magnitudes only makes the check frame-independent: neither
+distance depends on a shared world-frame reference origin, and the subtraction
+|gnss_disp − odom_disp| measures the pure path-length discrepancy regardless of
+vehicle heading or mounting conventions.
 
 The integration window is 180 s by default — longer than the IMU dead-reckoning
 window (60 s) because odometry error grows linearly O(T) rather than O(T^1.5) for
@@ -21,19 +32,19 @@ covering realistic urban GNSS multipath scenarios.
 Fault codes
 -----------
 ODOM_GNSS_DIVERGENCE_WARN     (recoverable=False)
-    Absolute displacement delta between GNSS and odometry exceeds warn_threshold_m.
+    Scalar path-length delta between GNSS and odometry exceeds warn_threshold_m.
 
 ODOM_GNSS_DIVERGENCE_CRITICAL (recoverable=False)
-    Absolute displacement delta exceeds critical_threshold_m.
+    Scalar path-length delta exceeds critical_threshold_m.
 
 ODOM_DROPOUT                  (recoverable=True)
     Odometry topic has been silent for longer than dropout_timeout_s.
     Clears automatically when odometry resumes.
 
 ODOM_SLIP_SUSPECTED           (recoverable=False)
-    Odometry systematically understates GNSS displacement by more than 10% over
-    the integration window (slip_ratio < 0.90).  Requires at least 5 m of GNSS
-    displacement to avoid false alarms near standstill.
+    Odometry systematically understates GNSS path length by more than 10% over
+    the integration window (odom_disp / gnss_disp < 0.90).  Requires at least
+    5 m of GNSS displacement to avoid false alarms near standstill.
 """
 
 import math
@@ -51,24 +62,27 @@ from poise.qos import SENSOR_QOS, INTEGRITY_QOS
 # WGS-84 semi-major axis (metres)
 _R_EARTH = 6_378_137.0
 
-# Minimum GNSS displacement before the slip check is evaluated.
-# Suppresses false positives when the vehicle is effectively stationary.
+# Minimum GNSS path length before the slip check is evaluated.
+# Suppresses false positives when the vehicle is near-stationary.
 _SLIP_MIN_GNSS_DISP_M = 5.0
 
 # Slip detection threshold: flag when odom understates GNSS by more than 10 %
 _SLIP_RATIO_THRESHOLD = 0.90
 
 
-def _geodetic_to_enu(lat_ref_deg, lon_ref_deg,
-                     lat_deg, lon_deg, alt_m=0.0, alt_ref_m=0.0):
-    """Flat-Earth ENU conversion — valid for baselines < ~10 km."""
-    dlat = math.radians(lat_deg - lat_ref_deg)
-    dlon = math.radians(lon_deg - lon_ref_deg)
-    lat_ref = math.radians(lat_ref_deg)
+def _geodetic_distance_m(lat_from_deg: float, lon_from_deg: float,
+                          lat_to_deg: float, lon_to_deg: float) -> float:
+    """Flat-Earth scalar distance between two geodetic points (metres).
+
+    Computes ENU displacement from (lat_from, lon_from) to (lat_to, lon_to)
+    and returns the Euclidean magnitude.  Valid for baselines < ~10 km.
+    """
+    dlat = math.radians(lat_to_deg - lat_from_deg)
+    dlon = math.radians(lon_to_deg - lon_from_deg)
+    lat_ref = math.radians(lat_from_deg)
     north = dlat * _R_EARTH
     east  = dlon * _R_EARTH * math.cos(lat_ref)
-    up    = alt_m - alt_ref_m
-    return east, north, up
+    return math.sqrt(east ** 2 + north ** 2)
 
 
 class OdometryChecker(Node):
@@ -88,17 +102,20 @@ class OdometryChecker(Node):
         self.dropout_timeout = self.get_parameter('dropout_timeout_s').value
         self.window_s        = self.get_parameter('integration_window_s').value
 
-        # ── GNSS reference and sliding-window anchor ─────────────────────────
-        self._ref_lat  = None
-        self._ref_lon  = None
-        self._ref_alt  = 0.0
+        # ── GNSS first-fix flag and sliding-window anchor ────────────────────
+        # _ref_lat is used only to detect whether any GNSS fix has been received.
+        self._ref_lat: float | None = None
 
-        self._anchor_east  = 0.0
-        self._anchor_north = 0.0
+        # Anchor stored in geodetic coordinates so gnss_disp is computed by
+        # _geodetic_distance_m(anchor_lat, anchor_lon, current_lat, current_lon)
+        # — no shared ENU reference origin is involved.
+        self._anchor_lat:  float | None = None
+        self._anchor_lon:  float | None = None
         self._anchor_time: float | None = None   # monotonic clock
 
         # ── Odometry integration state ────────────────────────────────────────
-        self._odom_disp          = 0.0   # signed sum of (velocity × dt) since anchor
+        # _odom_disp is accumulated as scalar speed × dt (always non-negative).
+        self._odom_disp          = 0.0
         self._last_odom_stamp_ns: int | None = None
         self._odom_samples       = 0     # messages integrated since anchor
 
@@ -164,8 +181,12 @@ class OdometryChecker(Node):
         if dt <= 0.0 or dt > 1.0:
             return
 
-        # Forward velocity in the vehicle body frame (x = forward for ground vehicle)
-        self._odom_disp  += msg.twist.twist.linear.x * dt
+        # Scalar speed — frame-independent: works regardless of body-frame
+        # orientation, straight-line or turning motion.
+        vx = msg.twist.twist.linear.x
+        vy = msg.twist.twist.linear.y
+        speed = math.sqrt(vx * vx + vy * vy)
+        self._odom_disp  += speed * dt
         self._odom_samples += 1
 
     # ── GNSS callback ─────────────────────────────────────────────────────────
@@ -174,53 +195,42 @@ class OdometryChecker(Node):
         now_mono  = time.monotonic()
         now_stamp = msg.header.stamp
 
-        # ── First fix: set reference origin ───────────────────────────────
+        # ── First fix: set anchor ─────────────────────────────────────────
         if self._ref_lat is None:
             self._ref_lat = msg.latitude
-            self._ref_lon = msg.longitude
-            self._ref_alt = msg.altitude
             self.get_logger().info(
-                f'Reference origin set: lat={self._ref_lat:.6f}, '
-                f'lon={self._ref_lon:.6f}'
+                f'First GNSS fix: lat={msg.latitude:.6f}, lon={msg.longitude:.6f}'
             )
-            self._realign_anchor(0.0, 0.0, now_mono)
+            self._realign_anchor(msg.latitude, msg.longitude, now_mono)
             return
 
-        # ── Convert fix to ENU ─────────────────────────────────────────────
-        east, north, _ = _geodetic_to_enu(
-            self._ref_lat, self._ref_lon,
-            msg.latitude, msg.longitude,
-            msg.altitude, self._ref_alt,
-        )
-
-        if self._anchor_time is None:
-            self._realign_anchor(east, north, now_mono)
+        if self._anchor_lat is None:
+            self._realign_anchor(msg.latitude, msg.longitude, now_mono)
             return
 
         elapsed = now_mono - self._anchor_time
 
         # ── Run cross-check at this fix ────────────────────────────────────
         if self._odom_samples > 0:
-            self._run_checks(east, north, elapsed, now_stamp)
+            self._run_checks(msg.latitude, msg.longitude, elapsed, now_stamp)
 
         # ── Periodic window realignment ────────────────────────────────────
         if elapsed >= self.window_s:
             self.get_logger().info(
                 f'Odometry window realignment after {elapsed:.1f}s'
             )
-            self._realign_anchor(east, north, now_mono)
+            self._realign_anchor(msg.latitude, msg.longitude, now_mono)
 
     # ── Check logic ───────────────────────────────────────────────────────────
 
-    def _run_checks(self, east: float, north: float,
+    def _run_checks(self, lat: float, lon: float,
                     elapsed: float, stamp) -> None:
-        # Displacement magnitudes from the window anchor
-        delta_east  = east  - self._anchor_east
-        delta_north = north - self._anchor_north
-        gnss_disp   = math.sqrt(delta_east ** 2 + delta_north ** 2)
-        odom_disp   = abs(self._odom_disp)
+        # Scalar distances from the window anchor — both in metres, no
+        # shared world-frame reference involved.
+        gnss_disp = _geodetic_distance_m(self._anchor_lat, self._anchor_lon,
+                                         lat, lon)
+        odom_disp = self._odom_disp   # accumulated as abs(speed)*dt
 
-        # Absolute divergence between GNSS and odometry displacement
         delta_m = abs(gnss_disp - odom_disp)
 
         self.get_logger().debug(
@@ -237,7 +247,7 @@ class OdometryChecker(Node):
                 recoverable=False,
                 fault_code='ODOM_GNSS_DIVERGENCE_CRITICAL',
                 description=(
-                    f'Odometry/GNSS divergence {delta_m:.3f} m exceeds '
+                    f'Odometry/GNSS path-length divergence {delta_m:.3f} m exceeds '
                     f'critical threshold {self.crit_thr:.3f} m '
                     f'(window age {elapsed:.1f}s)'
                 ),
@@ -252,7 +262,7 @@ class OdometryChecker(Node):
                 recoverable=False,
                 fault_code='ODOM_GNSS_DIVERGENCE_WARN',
                 description=(
-                    f'Odometry/GNSS divergence {delta_m:.3f} m exceeds '
+                    f'Odometry/GNSS path-length divergence {delta_m:.3f} m exceeds '
                     f'warn threshold {self.warn_thr:.3f} m '
                     f'(window age {elapsed:.1f}s)'
                 ),
@@ -262,8 +272,8 @@ class OdometryChecker(Node):
         # Non-recoverable — divergence fault is NOT cleared once set.
 
         # ── Slip check ────────────────────────────────────────────────────
-        # Only evaluate when there is meaningful GNSS displacement (avoids
-        # divide-by-near-zero false alarms at standstill or startup).
+        # Only evaluated when there is meaningful GNSS displacement (avoids
+        # divide-by-near-zero false alarms near standstill or at startup).
         if gnss_disp > _SLIP_MIN_GNSS_DISP_M and not self._slip_fault_active:
             slip_ratio = odom_disp / gnss_disp
             if slip_ratio < _SLIP_RATIO_THRESHOLD:
@@ -275,7 +285,7 @@ class OdometryChecker(Node):
                     recoverable=False,
                     fault_code='ODOM_SLIP_SUSPECTED',
                     description=(
-                        f'Odometry understates GNSS displacement by '
+                        f'Odometry understates GNSS path length by '
                         f'{understatement_pct:.1f}% — wheel slip suspected '
                         f'(odom={odom_disp:.2f}m, gnss={gnss_disp:.2f}m, '
                         f'window age {elapsed:.1f}s)'
@@ -292,10 +302,10 @@ class OdometryChecker(Node):
 
     # ── Anchor realignment ────────────────────────────────────────────────────
 
-    def _realign_anchor(self, east: float, north: float,
+    def _realign_anchor(self, lat: float, lon: float,
                         mono_time: float) -> None:
-        self._anchor_east    = east
-        self._anchor_north   = north
+        self._anchor_lat     = lat
+        self._anchor_lon     = lon
         self._anchor_time    = mono_time
         self._odom_disp      = 0.0
         self._odom_samples   = 0

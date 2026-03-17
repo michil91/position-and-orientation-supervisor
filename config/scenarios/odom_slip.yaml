@@ -9,6 +9,10 @@
 # ODOM_SLIP_SUSPECTED does not trigger — this scenario demonstrates the
 # divergence detection path rather than the systematic-slip path.
 
+gnss_publisher:
+  ros__parameters:
+    linear_velocity_mps: 10.0
+
 imu_publisher:
   ros__parameters:
     linear_velocity_mps: 10.0
