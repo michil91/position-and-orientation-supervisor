@@ -1,0 +1,6 @@
+# IMU extrinsic warn-only scenario — 0.7 m/s² Z-axis offset.
+# Above the 0.5 m/s² warn threshold but below the 1.5 m/s² critical threshold.
+# Produces only IMU_EXTRINSIC_WARN (SYSTEM DEGRADED) for the 60s escalation test.
+imu_publisher:
+  ros__parameters:
+    extrinsic_shift: 0.7

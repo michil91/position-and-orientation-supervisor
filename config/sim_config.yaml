@@ -141,12 +141,6 @@ calibration_validator:
     # lane-level positioning.
     gnss_max_covariance: 25.0         # m²
 
-    # min_fix_type: minimum NavSatStatus.status value.
-    # STATUS_NO_FIX=-1, STATUS_FIX=0, STATUS_SBAS_FIX=1, STATUS_GBAS_FIX=2.
-    # Set to 0 (STATUS_FIX) for simulation — the sim always publishes STATUS_FIX.
-    # In a production Autoware deployment, consider raising to 1 (SBAS) or 2 (GBAS).
-    gnss_min_fix_type: 0               # minimum acceptable NavSatStatus value
-
     # Geofence: expected operating area for the vehicle.
     # Central Tokyo station area — change for a different deployment region.
     # GNSS_OUT_OF_GEOFENCE is recoverable: the vehicle may re-enter the area.
@@ -219,9 +213,9 @@ odometry_checker:
 
 integrity_aggregator:
   ros__parameters:
-    # How long a non-recoverable WARN must persist before escalating to UNTRUSTED.
-    # Recoverable WARNs (e.g. GNSS_DROPOUT) do NOT escalate via this timeout.
-    warn_escalation_timeout_s: 5.0
+    # How long SYSTEM DEGRADED must persist before escalating to UNTRUSTED.
+    # CRITICAL faults bypass this timeout and go to UNTRUSTED immediately.
+    warn_escalation_timeout_s: 60.0
 
     # Time without any faults required before returning to TRUSTED after a
     # recoverable-only fault set clears.  Models the tunnel exit scenario:

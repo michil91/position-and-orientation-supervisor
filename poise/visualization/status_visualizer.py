@@ -56,19 +56,29 @@ _CHECK_TO_NODE: dict[str, str] = {
     'imu_gyro_envelope':     'calibration_validator',
     'imu_gravity_envelope':  'calibration_validator',
     'gnss_geofence':         'calibration_validator',
-    'gnss_fix_type':         'calibration_validator',
     'calibration_validator': 'calibration_validator',
     # extrinsic_validator checks
     'imu_extrinsic':         'extrinsic_validator',
+    # odometry_checker checks (and heartbeat)
+    'odom_gnss_cross_check': 'odometry_checker',
+    'odom_slip_check':       'odometry_checker',
+    'odom_dropout':          'odometry_checker',
+    'odometry_checker':      'odometry_checker',
 }
 
-_CHECKERS = ['gnss_imu_checker', 'calibration_validator', 'extrinsic_validator']
+_CHECKERS = [
+    'gnss_imu_checker',
+    'calibration_validator',
+    'extrinsic_validator',
+    'odometry_checker',
+]
 
 # Traffic-light panel — right of map boundary, separated from position tracks
 _TRAFFIC_LIGHT_POSITIONS = {
-    'gnss_imu_checker':      (6.0,  2.0, 0.0),
-    'calibration_validator': (6.0,  0.0, 0.0),
-    'extrinsic_validator':   (6.0, -2.0, 0.0),
+    'gnss_imu_checker':      (6.0,  3.0, 0.0),
+    'calibration_validator': (6.0,  1.0, 0.0),
+    'extrinsic_validator':   (6.0, -1.0, 0.0),
+    'odometry_checker':      (6.0, -3.0, 0.0),
 }
 
 # Status → (r, g, b) color
@@ -80,17 +90,18 @@ _STATUS_COLOR = {
 }
 
 _TRUST_COLOR = {
-    'TRUSTED':   (0.0, 1.0, 0.0),
-    'DEGRADED':  (1.0, 1.0, 0.0),
-    'UNTRUSTED': (1.0, 0.0, 0.0),
+    'TRUSTED':              (0.0, 1.0, 0.0),   # green
+    'ENVIRONMENT DEGRADED': (1.0, 1.0, 0.0),   # yellow
+    'SYSTEM DEGRADED':      (1.0, 0.5, 0.0),   # orange
+    'UNTRUSTED':            (1.0, 0.0, 0.0),   # red
 }
 
 # Legend items: (text, r, g, b)
 _LEGEND_ITEMS = [
     ('● GNSS Position',              0.2, 0.4, 1.0),
     ('● DR Position',                1.0, 0.5, 0.0),
-    ('— DEGRADED threshold (1.5m)', 1.0, 1.0, 0.0),
-    ('— UNTRUSTED threshold (3.0m)', 1.0, 0.5, 0.0),
+    ('— WARN threshold (1.5m)',      1.0, 1.0, 0.0),
+    ('— CRITICAL threshold (3.0m)',  1.0, 0.5, 0.0),
 ]
 
 
@@ -344,7 +355,7 @@ class StatusVisualizer(Node):
         title.type            = Marker.TEXT_VIEW_FACING
         title.action          = Marker.ADD
         title.pose.position.x = 6.0
-        title.pose.position.y = 3.0
+        title.pose.position.y = 4.5
         title.pose.position.z = 0.0
         title.pose.orientation.w = 1.0
         title.scale.z = 0.3

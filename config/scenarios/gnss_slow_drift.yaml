@@ -1,0 +1,21 @@
+# Slow drift scenario for 60s escalation test.
+# 0.03 m/s drift reaches WARN (1.5m) at ~50s, never reaches CRITICAL (3m)
+# in a single 60s DR window. Used to verify SYSTEM DEGRADED → UNTRUSTED
+# escalation via the 60s timeout (not via CRITICAL).
+gnss_publisher:
+  ros__parameters:
+    linear_velocity_mps: 0.0
+    fault_mode: drift
+    drift_rate_m_per_s: 0.03
+
+imu_publisher:
+  ros__parameters:
+    linear_velocity_mps: 0.0
+
+vehicle_state_publisher:
+  ros__parameters:
+    linear_velocity_mps: 0.0
+
+odometry_publisher:
+  ros__parameters:
+    linear_velocity_mps: 0.0

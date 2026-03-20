@@ -13,13 +13,12 @@ IMU_ACCEL_OUT_OF_ENVELOPE    Non-recoverable  Linear acceleration magnitude exce
 IMU_GYRO_OUT_OF_ENVELOPE     Non-recoverable  Angular velocity magnitude exceeds calibrated range
 IMU_GRAVITY_OUT_OF_ENVELOPE  Non-recoverable  Z-axis acceleration outside expected gravity range
 GNSS_OUT_OF_GEOFENCE         Recoverable      Position outside expected operating area
-GNSS_FIX_DEGRADED            Recoverable      Fix type below minimum acceptable
 
 IMU faults are non-recoverable because they indicate sensor failure — a physically
 impossible reading cannot be explained by environmental conditions.
 
-GNSS faults are recoverable because they are positional/environmental — the vehicle
-may re-enter the geofence or fix quality may improve as geometry changes.
+GNSS_OUT_OF_GEOFENCE is recoverable because it is positional/environmental — the
+vehicle may re-enter the geofence as it moves.
 
 Publishing cadence
 ------------------
@@ -53,7 +52,6 @@ class CalibrationValidator(Node):
 
         # GNSS envelope
         self.declare_parameter('gnss_max_covariance',      25.0)
-        self.declare_parameter('gnss_min_fix_type',         0)
         self.declare_parameter('gnss_geofence_lat_min',    35.0)
         self.declare_parameter('gnss_geofence_lat_max',    36.5)
         self.declare_parameter('gnss_geofence_lon_min',   139.0)
@@ -65,7 +63,6 @@ class CalibrationValidator(Node):
         self._imu_max_accel_z = self.get_parameter('imu_max_accel_z').value
 
         self._gnss_max_cov  = self.get_parameter('gnss_max_covariance').value
-        self._gnss_min_fix  = self.get_parameter('gnss_min_fix_type').value
         self._geo_lat_min   = self.get_parameter('gnss_geofence_lat_min').value
         self._geo_lat_max   = self.get_parameter('gnss_geofence_lat_max').value
         self._geo_lon_min   = self.get_parameter('gnss_geofence_lon_min').value
@@ -76,7 +73,6 @@ class CalibrationValidator(Node):
         self._imu_gyro_active    = False
         self._imu_gravity_active = False
         self._gnss_geofence_active = False
-        self._gnss_fix_active    = False
 
         # ── Publisher / Subscribers ──────────────────────────────────────────
         self._status_pub = self.create_publisher(
@@ -94,7 +90,7 @@ class CalibrationValidator(Node):
             f'imu_max_accel={self._imu_max_accel} m/s² | '
             f'imu_max_gyro={self._imu_max_gyro} rad/s | '
             f'imu_z_range=[{self._imu_min_accel_z}, {self._imu_max_accel_z}] m/s² | '
-            f'gnss_geofence=[{self._geo_lat_min},{self._geo_lat_max}]°lat '
+            f'geofence=[{self._geo_lat_min},{self._geo_lat_max}]°lat '
             f'[{self._geo_lon_min},{self._geo_lon_max}]°lon'
         )
 
@@ -239,36 +235,6 @@ class CalibrationValidator(Node):
                 units='degrees', stamp=stamp,
             )
 
-        # ── Check 5: fix type ─────────────────────────────────────────────
-        if msg.status.status < self._gnss_min_fix:
-            if not self._gnss_fix_active:
-                self._gnss_fix_active = True
-            self._publish_status(
-                check_name='gnss_fix_type',
-                status=IntegrityStatus.STATUS_WARN,
-                recoverable=True,
-                fault_code='GNSS_FIX_DEGRADED',
-                description=(
-                    f'GNSS fix type {msg.status.status} below minimum '
-                    f'acceptable {self._gnss_min_fix}'
-                ),
-                measured=float(msg.status.status),
-                threshold=float(self._gnss_min_fix),
-                units='fix_status', stamp=stamp,
-            )
-        elif self._gnss_fix_active:
-            self._gnss_fix_active = False
-            self._publish_status(
-                check_name='gnss_fix_type',
-                status=IntegrityStatus.STATUS_OK,
-                recoverable=True,
-                fault_code='',
-                description='GNSS fix type meets minimum requirement',
-                measured=float(msg.status.status),
-                threshold=float(self._gnss_min_fix),
-                units='fix_status', stamp=stamp,
-            )
-
     # ── Heartbeat (1 Hz) ──────────────────────────────────────────────────────
 
     def _heartbeat_cb(self):
@@ -277,8 +243,7 @@ class CalibrationValidator(Node):
             self._imu_accel_active   or
             self._imu_gyro_active    or
             self._imu_gravity_active or
-            self._gnss_geofence_active or
-            self._gnss_fix_active
+            self._gnss_geofence_active
         )
         if not any_active:
             stamp = self.get_clock().now().to_msg()

@@ -39,6 +39,8 @@ _VALID_SCENARIOS = [
     'gnss_drift',
     'gnss_jump',
     'gnss_dropout',
+    'gnss_slow_drift',
+    'imu_extrinsic_warn_only',
     'imu_bias',
     'imu_spike',
     'imu_extrinsic',
